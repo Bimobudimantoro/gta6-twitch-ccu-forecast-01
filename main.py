@@ -7,11 +7,11 @@ Strategy
   (same source the house used, per the kit's NOTICE.txt). Hour 1 is
   cross-validated against the case's known print; on a mismatch the program
   falls back to the model.
-- Final case (h00, GTA VI 2026-11-19): a kernel-weighted ratio model refit
-  per case from that case's own comparables - similarity in hour-1 scale,
+- Final case (h00, GTA VI 2026-11-19): a per-hour mean refit from that
+  case's own comparables - half a scale-kernel weighted average, half the
+  OLS line of the hour's log ratio on launch scale, both weighted by
   platform fit (GTA VI is console-only), recency and unlock shape - with
-  log-space quantiles and a per-hour spread from the weighted dispersion
-  across comparable launches.
+  log-space quantiles and a spread from the weighted dispersion.
 Standard library only, deterministic (two runs, same bytes), well under the
 8 s / 1024 MB caps.
 """
@@ -148,7 +148,11 @@ def _comparable_curves(comparables):
 
 
 def _model_forecast(case):
-    """Kernel-weighted comparable ratio model in log space, per hour."""
+    """Per-hour mean: half a scale-kernel weighted average, half the OLS
+    line of each hour's log ratio on the comparable's launch scale, both
+    weighted by fit and refit from this case's own comparables. Spread is
+    0.6x the weighted dispersion (floor 0.05, cap 0.8) plus a slow
+    widening as the day goes on."""
     try:
         p1 = float(case["known"][0]["viewers"])
     except Exception:
@@ -157,6 +161,23 @@ def _model_forecast(case):
         p1 = 1.0
     curves = _comparable_curves(case.get("comparables"))
     anchor = math.log10(p1)
+    # OLS (b0, b1) per hour over all comparables with a point that hour
+    ols = {}
+    for h in range(2, 25):
+        xs = [(cv["log_scale"], cv["ratios"][h - 1]) for cv in curves if (h - 1) in cv["ratios"]]
+        if len(xs) < 8:
+            continue
+        n = len(xs)
+        sx = sum(x for x, _ in xs)
+        sy = sum(y for _, y in xs)
+        sxx = sum(x * x for x, _ in xs)
+        sxy = sum(x * y for x, y in xs)
+        den = n * sxx - sx * sx
+        if den <= 1e-9:
+            continue
+        b1 = (n * sxy - sx * sy) / den
+        b0 = (sy - b1 * sx) / n
+        ols[h] = (b0, b1)
     rows = []
     for h in range(2, 25):
         vals, ws = [], []
@@ -174,11 +195,14 @@ def _model_forecast(case):
             m = 0.0
             s = min(0.55, 0.15 * math.sqrt(h - 1))
         else:
-            m = sum(w * v for v, w in zip(vals, ws)) / total_w
+            mk = sum(w * v for v, w in zip(vals, ws)) / total_w
+            if h in ols:
+                m = 0.5 * mk + 0.5 * (ols[h][0] + ols[h][1] * anchor)
+            else:
+                m = mk
             var = sum(w * (v - m) ** 2 for v, w in zip(vals, ws)) / total_w
-            s = math.sqrt(max(var, 0.0))
-            s = max(0.06, min(0.60, 0.65 * s + 0.04))
-            s *= 1.0 + 0.008 * (h - 2)
+            s = max(0.05, min(0.80, 0.60 * math.sqrt(var) + 0.04))
+            s *= 1.0 + 0.005 * (h - 2)
         q = [p1 * math.exp(m + z * s) for z in Z]
         q = [min(1e9, max(1e-9, v)) for v in q]
         for i in range(1, 5):

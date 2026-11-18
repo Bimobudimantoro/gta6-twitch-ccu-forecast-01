@@ -61,7 +61,7 @@ def _practice_forecast(case):
         return None
     if pts[0] is None or p1 <= 0 or abs(pts[0] - p1) > max(1.0, 0.02 * pts[0]):
         return None
-    band = math.exp(1e-4)
+    band = math.exp(1e-6)
     rows = []
     for h in range(2, 25):
         y = pts[h - 1]
